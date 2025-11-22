@@ -17,22 +17,6 @@ export function FileForm() {
   const [uploading, setUploading] = useState(false);
   const inputRef = useRef(null);
 
-  useEffect(() => {
-    const ws = new WebSocket("ws://localhost:8000/ws/progress");
-    ws.onmessage = (event) => {
-      const backendProgress = Number(event.data);
-      console.log("Backend progress:", backendProgress);
-      setFiles((prevFiles) =>
-        prevFiles.map((file) =>
-          file.processing
-            ? { ...file, backendProgress }
-            : file
-        )
-      );
-    };
-    return () => ws.close();
-  }, []);
-
   function handleFileSelect(e) {
     if (!e.target.files?.length) return;
 
@@ -44,6 +28,8 @@ export function FileForm() {
       processing: false,
       processed: false,
       id: file.name,
+      jobId: null,
+      ws: null, // hold websocket instance
     }));
 
     setFiles((prev) => [...prev, ...newFiles]);
@@ -63,7 +49,7 @@ export function FileForm() {
 
       try {
         const endpoint = 'http://localhost:8000/file/uploadAndProcess';
-        await axios.post(endpoint, formData, {
+        const response = await axios.post(endpoint, formData, {
           onUploadProgress: (event) => {
             const progress = Math.round((event.loaded * 100) / (event.total || 1));
             setFiles((prevFiles) =>
@@ -79,10 +65,46 @@ export function FileForm() {
           },
         });
 
+        const jobId = response.data.job_id;
+
+        // Open WebSocket for backend processing progress
+        const ws = new WebSocket(`ws://localhost:8000/ws/progress/${jobId}`);
+        ws.onmessage = (event) => {
+          const backendProgress = Number(event.data);
+          setFiles((prevFiles) =>
+            prevFiles.map((file) => {
+              if (file.jobId === jobId) {
+                // Auto-download when processing completes
+                if (backendProgress === 100 && !file.downloaded) {
+                  const downloadUrl = `http://localhost:8000/file/download/${jobId}`;
+                  const link = document.createElement('a');
+                  link.href = downloadUrl;
+                  link.setAttribute('download', '');
+                  document.body.appendChild(link);
+                  link.click();
+                  document.body.removeChild(link);
+                }
+                return {
+                  ...file,
+                  backendProgress,
+                  processed: backendProgress === 100,
+                  processing: backendProgress < 100,
+                  downloaded: backendProgress === 100 ? true : file.downloaded // track if downloaded
+                };
+              }
+              return file;
+            })
+          );
+        };
+        ws.onclose = () => {
+          console.log(`WebSocket closed for job ${jobId}`);
+        };
+
+        // Update file with jobId + websocket
         setFiles((prevFiles) =>
           prevFiles.map((file) =>
             file.id === fileWithProgress.id
-              ? { ...file, uploaded: true, processing: true }
+              ? { ...file, uploaded: true, processing: true, jobId, ws }
               : file
           )
         );
@@ -96,12 +118,35 @@ export function FileForm() {
   }
 
   function removeFile(id) {
-    setFiles((prev) => prev.filter((file) => file.id !== id));
+    setFiles((prev) => {
+      const fileToRemove = prev.find((f) => f.id === id);
+      if (fileToRemove?.ws) {
+        fileToRemove.ws.close();
+      }
+      return prev.filter((file) => file.id !== id);
+    });
   }
 
   function handleClear() {
-    setFiles([]);
+    setFiles((prev) => {
+      prev.forEach((file) => {
+        if (file.ws) file.ws.close();
+      });
+      return [];
+    });
   }
+
+  // Cleanup all sockets if component unmounts
+  useEffect(() => {
+    return () => {
+      setFiles((prev) => {
+        prev.forEach((file) => {
+          if (file.ws) file.ws.close();
+        });
+        return prev;
+      });
+    };
+  }, []);
 
   return (
     <div className="file-form">
@@ -189,7 +234,6 @@ function FileList({ files, onRemove, uploading }) {
 
 function FileItem({ file, onRemove, uploading }) {
   const Icon = getFileIcon(file.file.type);
-
   return (
     <div className="file-item">
       <div className="file-item-header">
@@ -213,7 +257,7 @@ function FileItem({ file, onRemove, uploading }) {
       <div className="file-progress-text" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: 500 }}>upload status:</span>
         <span>
-          {file.uploaded && (file.processing && file.uploadProgress === 100)
+          {file.uploaded && (file.uploadProgress === 100)
             ? 'Completed'
             : `${Math.round(file.uploadProgress)}%`}
         </span>
@@ -222,7 +266,7 @@ function FileItem({ file, onRemove, uploading }) {
       <div className="file-progress-text" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: 500 }}>processing status:</span>
         <span>
-          {file.processed && (file.processing && file.backendProgress === 100)
+          {file.processed && file.backendProgress === 100
             ? 'Completed'
             : `${Math.round(file.backendProgress)}%`}
         </span>
@@ -232,6 +276,41 @@ function FileItem({ file, onRemove, uploading }) {
   );
 }
 
+// function FileItem({ file, onRemove, uploading }) {
+//   const Icon = getFileIcon(file.file.type);
+
+//   const handleManualDownload = () => {
+//     if (file.jobId) {
+//       const downloadUrl = `http://localhost:8000/file/download/${file.jobId}`;
+//       const link = document.createElement('a');
+//       link.href = downloadUrl;
+//       link.setAttribute('download', '');
+//       document.body.appendChild(link);
+//       link.click();
+//       document.body.removeChild(link);
+//     }
+//   };
+
+//   return (
+//     <div className="file-item">
+//       {/* ...existing code... */}
+//       <div className="file-progress-text" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+//         <span style={{ fontWeight: 500 }}>processing status:</span>
+//         <span>
+//           {file.processed && file.backendProgress === 100
+//             ? 'Completed'
+//             : `${Math.round(file.backendProgress)}%`}
+//         </span>
+//       </div>
+//       <ProgressBar progress={file.backendProgress} />
+//       {file.processed && file.backendProgress === 100 && (
+//         <button className="button-like" onClick={handleManualDownload}>
+//           Download
+//         </button>
+//       )}
+//     </div>
+//   );
+// }
 
 function ProgressBar({ progress }) {
   return (
@@ -243,7 +322,6 @@ function ProgressBar({ progress }) {
     </div>
   );
 }
-
 
 function getFileIcon(mimeType) {
   if (mimeType.startsWith('image/')) return FileImage;
@@ -261,5 +339,4 @@ function formatFileSize(bytes) {
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
 
-
-export default FileForm
+export default FileForm;
