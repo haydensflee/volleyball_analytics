@@ -25,7 +25,7 @@ This project processes raw volleyball video to detect game states (PLAY / NO-PLA
 - Frontend: React (progress UI, two progress bars per file)
 - Deployment: uvicorn (development); designed for containerization / cloud VMs for production
 
-## How it works (concise)
+## How it works
 
 1. User uploads a video → backend saves the file and returns a `job_id`.
 2. A background task processes frames in batches and updates job progress via `notify_progress(job_id, percent)`.
@@ -57,7 +57,7 @@ uvicorn src.app:app --host 0.0.0.0 --port 8000 --reload
 ```bash
 cd my-react-app
 npm install
-npm start
+npm run dev
 ```
 
 The React app (Vite) usually serves at `http://localhost:5173` by default.
